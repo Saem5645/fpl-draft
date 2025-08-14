@@ -3,6 +3,7 @@ import "./globals.css";
 import Script from "next/script";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import EnablePushButton from "@/components/EnablePushButton";
 
 export const metadata = {
   title: "Activity feed",
@@ -11,12 +12,11 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   const oneSignalAppId =
-    process.env.NEXT_PUBLIC_ONESIGNAL_APP_ID || "PUT_YOUR_APP_ID_HERE";
+    process.env.NEXT_PUBLIC_ONESIGNAL_APP_ID || "5756f280-0e71-4d6c-865d-33c15f515901";
 
   return (
     <html lang="en">
       <head>
-        {/* OneSignal SDK */}
         <Script
           src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js"
           strategy="afterInteractive"
@@ -28,17 +28,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               try {
                 await OneSignal.init({
                   appId: "${oneSignalAppId}",
-                  // ensure SW paths if you host at root /public
                   serviceWorkerPath: "/OneSignalSDKWorker.js",
                   serviceWorkerUpdaterPath: "/OneSignalSDKUpdaterWorker.js",
                   allowLocalhostAsSecureOrigin: true
                 });
 
-                // Actively prompt if permission is 'default' (not granted/denied)
                 const perm = (typeof Notification !== 'undefined') ? Notification.permission : 'default';
                 if (perm === 'default') {
-                  // Use OneSignal's slidedown UI. If unavailable, fall back to native prompt.
-                  if (OneSignal.Slidedown && OneSignal.Slidedown.promptPush) {
+                  if (OneSignal.Slidedown?.promptPush) {
                     await OneSignal.Slidedown.promptPush();
                   } else if (OneSignal.Notifications?.requestPermission) {
                     await OneSignal.Notifications.requestPermission();
@@ -48,7 +45,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 console.error('OneSignal init error:', e);
               }
 
-              // Expose a manual enable function (used by the button below)
+              // Exposed for the client button
               window.enablePushManually = async () => {
                 try {
                   if (OneSignal.Slidedown?.promptPush) {
@@ -70,15 +67,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <Link href="/draft">Transfers</Link>
           <Link href="/my-team">My Team</Link>
           <Link href="/account">Account</Link>
-          {/* Manual enable (shows if still blocked/default) */}
-          <button
-            onClick={() => (window as any).enablePushManually?.()}
-            style={{ marginLeft: "auto", fontSize: 12 }}
-            className="btn secondary"
-            title="Enable notifications"
-          >
-            Enable notifications
-          </button>
+
+          {/* Client-side button (no handler in layout) */}
+          <EnablePushButton />
         </nav>
 
         <main style={{ padding: 16, maxWidth: 1100, margin: "0 auto" }}>
