@@ -20,8 +20,8 @@ export default function TransfersPage() {
   const [swapFrom, setSwapFrom] = useState<{ id: number; name: string; position: string | null } | null>(null);
 
   // Filters
-  const [teamFilter, setTeamFilter] = useState<string>('ALL'); // 'ALL' or exact team
-  const [posFilter, setPosFilter] = useState<string>('ALL');   // 'ALL' | 'GK' | 'DEF' | 'MID' | 'FWD'
+  const [teamFilter, setTeamFilter] = useState<string>('ALL');
+  const [posFilter, setPosFilter] = useState<string>('ALL');
 
   // Load user + username
   useEffect(() => {
@@ -45,13 +45,8 @@ export default function TransfersPage() {
   // Load players + my selections
   const load = async () => {
     const { data: p, error: pErr } = await supabase.from('players').select('*').order('name');
-    if (pErr) {
-      console.error(pErr);
-      alert('Players error: ' + pErr.message);
-      setPlayers([]);
-    } else {
-      setPlayers(p ?? []);
-    }
+    if (pErr) { console.error(pErr); alert('Players error: ' + pErr.message); setPlayers([]); }
+    else setPlayers(p ?? []);
 
     const { data: uData } = await supabase.auth.getUser();
     const u = uData?.user;
@@ -79,20 +74,20 @@ export default function TransfersPage() {
 
   const color = (c: number) => (c >= 2 ? 'bg-red' : c === 1 ? 'bg-yellow' : 'bg-green');
 
-  // ---- typed counters (fixes Vercel TypeScript error)
+  // ---- typed counters (no ts-expect-error)
   const counters: Counters = useMemo(() => {
-    const pos = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
+    const posOnly: Omit<Counters, 'total'> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
     for (const p of players) {
       if (mySel.includes(p.id)) {
         const k = (p.position ?? '').toUpperCase();
         if (k === 'GK' || k === 'DEF' || k === 'MID' || k === 'FWD') {
-          // @ts-expect-error narrow keys safely
-          pos[k] += 1;
+          const key = k as keyof Omit<Counters, 'total'>;
+          posOnly[key] += 1;
         }
       }
     }
-    const total = pos.GK + pos.DEF + pos.MID + pos.FWD;
-    return { total, GK: pos.GK, DEF: pos.DEF, MID: pos.MID, FWD: pos.FWD };
+    const total = posOnly.GK + posOnly.DEF + posOnly.MID + posOnly.FWD;
+    return { total, GK: posOnly.GK, DEF: posOnly.DEF, MID: posOnly.MID, FWD: posOnly.FWD };
   }, [players, mySel]);
 
   const limits = { GK: 2, DEF: 5, MID: 5, FWD: 3, TOTAL: 15 };
@@ -107,7 +102,7 @@ export default function TransfersPage() {
     return true;
   };
 
-  // Helper: write to feed_events, and if that fails, write to posts as a fallback
+  // Helper: write to feed_events, fallback to posts if needed
   const postToFeed = async (message: string, kind: 'selection_add' | 'swap', playerId: number) => {
     const { error: feErr } = await supabase.from('feed_events').insert({
       kind,
@@ -192,7 +187,7 @@ export default function TransfersPage() {
       const k = (p.position ?? '').toUpperCase() as 'GK' | 'DEF' | 'MID' | 'FWD';
       if (k in g) g[k].push(p);
     }
-    for (const k of ['GK','DEF','MID','FWD'] as const) g[k].sort((a,b)=>a.name.localeCompare(b.name));
+    (['GK','DEF','MID','FWD'] as const).forEach(k => g[k].sort((a,b)=>a.name.localeCompare(b.name)));
     return g;
   }, [filteredPlayers]);
 
