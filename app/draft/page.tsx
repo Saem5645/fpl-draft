@@ -10,16 +10,18 @@ type Player = {
   selected_count: number;
 };
 
+type Counters = { total: number; GK: number; DEF: number; MID: number; FWD: number };
+
 export default function TransfersPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [mySel, setMySel] = useState<number[]>([]);
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<import('@supabase/supabase-js').User | null>(null);
   const [myUsername, setMyUsername] = useState<string | null>(null);
   const [swapFrom, setSwapFrom] = useState<{ id: number; name: string; position: string | null } | null>(null);
 
   // Filters
-  const [teamFilter, setTeamFilter] = useState<string>('ALL');
-  const [posFilter, setPosFilter] = useState<string>('ALL');
+  const [teamFilter, setTeamFilter] = useState<string>('ALL'); // 'ALL' or exact team
+  const [posFilter, setPosFilter] = useState<string>('ALL');   // 'ALL' | 'GK' | 'DEF' | 'MID' | 'FWD'
 
   // Load user + username
   useEffect(() => {
@@ -43,8 +45,13 @@ export default function TransfersPage() {
   // Load players + my selections
   const load = async () => {
     const { data: p, error: pErr } = await supabase.from('players').select('*').order('name');
-    if (pErr) { console.error(pErr); alert('Players error: ' + pErr.message); setPlayers([]); }
-    else setPlayers(p ?? []);
+    if (pErr) {
+      console.error(pErr);
+      alert('Players error: ' + pErr.message);
+      setPlayers([]);
+    } else {
+      setPlayers(p ?? []);
+    }
 
     const { data: uData } = await supabase.auth.getUser();
     const u = uData?.user;
@@ -59,24 +66,33 @@ export default function TransfersPage() {
 
   // Realtime refresh
   useEffect(() => {
-    const ch1 = supabase.channel('players').on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, load).subscribe();
-    const ch2 = supabase.channel('selections').on('postgres_changes', { event: '*', schema: 'public', table: 'selections' }, load).subscribe();
+    const ch1 = supabase
+      .channel('players')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, load)
+      .subscribe();
+    const ch2 = supabase
+      .channel('selections')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'selections' }, load)
+      .subscribe();
     return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); };
   }, [user]);
 
   const color = (c: number) => (c >= 2 ? 'bg-red' : c === 1 ? 'bg-yellow' : 'bg-green');
 
-  // Counters (your squad)
-  const counters = useMemo(() => {
-    const pos = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;
+  // ---- typed counters (fixes Vercel TypeScript error)
+  const counters: Counters = useMemo(() => {
+    const pos = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
     for (const p of players) {
       if (mySel.includes(p.id)) {
         const k = (p.position ?? '').toUpperCase();
-        if (k in pos) pos[k]++;
+        if (k === 'GK' || k === 'DEF' || k === 'MID' || k === 'FWD') {
+          // @ts-expect-error narrow keys safely
+          pos[k] += 1;
+        }
       }
     }
-    const total = Object.values(pos).reduce((a, b) => a + b, 0);
-    return { total, ...pos };
+    const total = pos.GK + pos.DEF + pos.MID + pos.FWD;
+    return { total, GK: pos.GK, DEF: pos.DEF, MID: pos.MID, FWD: pos.FWD };
   }, [players, mySel]);
 
   const limits = { GK: 2, DEF: 5, MID: 5, FWD: 3, TOTAL: 15 };
@@ -91,27 +107,25 @@ export default function TransfersPage() {
     return true;
   };
 
-  // Helper: write to feed_events, and if that fails, write to posts as a fallback so the feed still shows something.
+  // Helper: write to feed_events, and if that fails, write to posts as a fallback
   const postToFeed = async (message: string, kind: 'selection_add' | 'swap', playerId: number) => {
     const { error: feErr } = await supabase.from('feed_events').insert({
       kind,
-      actor_id: user.id,
+      actor_id: user!.id,
       player_id: playerId,
       message,
     });
     if (feErr) {
       console.error('feed_events insert failed:', feErr);
-      // Fallback: a readable line into posts
       await supabase.from('posts').insert({
-        user_id: user.id,
+        user_id: user!.id,
         content: `${kind === 'swap' ? 'transfer' : 'selection'}: ${message}`,
       });
-      // Optional: notify the user
       alert('Note: Event feed didn’t accept the transfer, so a post was added instead.');
     }
   };
 
-  // Select (first-time/general picks)
+  // Select (first-time pick)
   const selectPlayer = async (p: Player) => {
     if (!user) return alert('Please sign in first');
     if (!requireUsername()) return;
@@ -125,18 +139,20 @@ export default function TransfersPage() {
     await postToFeed(`${myUsername} selected ${p.name}`, 'selection_add', p.id);
   };
 
-  // Swap flow (same-position only)
+  // Start swap (mark who to replace)
   const startSwap = (p: Player) => {
     if (!user) return alert('Please sign in first');
     if (!requireUsername()) return;
     setSwapFrom({ id: p.id, name: p.name, position: p.position ?? null });
   };
 
+  // Confirm replacement (same-position only)
   const pickReplacement = async (newP: Player) => {
     if (!user || !swapFrom) return;
     if (!requireUsername()) return;
 
-    if ((swapFrom.position ?? '') !== (newP.position ?? '')) return alert('You can only swap for the same position.');
+    if ((swapFrom.position ?? '') !== (newP.position ?? ''))
+      return alert('You can only swap for the same position.');
     if (newP.selected_count >= 2) return alert('That player already has two owners.');
     if (mySel.includes(newP.id)) return alert('You already own that player.');
     if (!confirm(`${myUsername} swapped ${swapFrom.name} for ${newP.name} — confirm?`)) return;
@@ -154,7 +170,7 @@ export default function TransfersPage() {
 
   const cancelSwap = () => setSwapFrom(null);
 
-  // Filters
+  // Filter options and filtered list
   const teamOptions = useMemo(() => {
     const set = new Set<string>();
     for (const p of players) if (p.team) set.add(p.team);
@@ -169,7 +185,7 @@ export default function TransfersPage() {
     });
   }, [players, teamFilter, posFilter]);
 
-  // Group by position in GK → DEF → MID → FWD
+  // Group filtered players by position in GK → DEF → MID → FWD order (A→Z inside)
   const grouped = useMemo(() => {
     const g: Record<'GK' | 'DEF' | 'MID' | 'FWD', Player[]> = { GK: [], DEF: [], MID: [], FWD: [] };
     for (const p of filteredPlayers) {
@@ -180,6 +196,7 @@ export default function TransfersPage() {
     return g;
   }, [filteredPlayers]);
 
+  // Eligible replacements when in swap mode
   const eligibleReplacementIds = useMemo(() => {
     if (!swapFrom) return new Set<number>();
     const ids = new Set<number>();
@@ -192,6 +209,7 @@ export default function TransfersPage() {
     return ids;
   }, [swapFrom, players, mySel]);
 
+  // Render a position section
   const renderSection = (label: 'GK'|'DEF'|'MID'|'FWD', list: Player[]) => {
     if (list.length === 0) return null;
     return (
@@ -202,13 +220,18 @@ export default function TransfersPage() {
             const mine = mySel.includes(p.id);
             const isEligible = swapFrom ? eligibleReplacementIds.has(p.id) : false;
             return (
-              <div key={p.id} className={`card ${color(p.selected_count)}`} style={{ opacity: swapFrom && !mine && !isEligible ? 0.5 : 1 }}>
+              <div
+                key={p.id}
+                className={`card ${color(p.selected_count)}`}
+                style={{ opacity: swapFrom && !mine && !isEligible ? 0.5 : 1 }}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                   <div>
                     <div style={{ fontWeight: 600 }}>{p.name}</div>
                     <div className="badge">{[p.team, p.position].filter(Boolean).join(' · ')}</div>
                     <div className="badge" style={{ marginTop: 4 }}>Selected: {p.selected_count}/2</div>
                   </div>
+
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     {!mine && !swapFrom && p.selected_count < 2 && (
                       <button className="btn" onClick={() => selectPlayer(p)}>Select</button>
@@ -233,6 +256,7 @@ export default function TransfersPage() {
     <div style={{ display: 'grid', gap: 12 }}>
       <h1 style={{ fontSize: 20, fontWeight: 600 }}>Transfers</h1>
 
+      {/* Counter bar */}
       <div className="card" style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
         <div><strong>Squad:</strong> {counters.total}/{limits.TOTAL}</div>
         <div className="badge">GK {counters.GK}/{limits.GK}</div>
@@ -242,6 +266,7 @@ export default function TransfersPage() {
         {swapFrom && <div className="badge">Swap mode: {swapFrom.name} ({swapFrom.position})</div>}
       </div>
 
+      {/* Filters */}
       <div className="card" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <div>
           <label style={{ display: 'block', fontSize: 12, opacity: 0.7 }}>Team</label>
@@ -267,6 +292,7 @@ export default function TransfersPage() {
         )}
       </div>
 
+      {/* Swap notice */}
       {swapFrom && (
         <div className="card" style={{ borderColor: '#60a5fa', background: '#eff6ff' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -279,6 +305,7 @@ export default function TransfersPage() {
         </div>
       )}
 
+      {/* Sections: GK → DEF → MID → FWD */}
       {renderSection('GK',  grouped.GK)}
       {renderSection('DEF', grouped.DEF)}
       {renderSection('MID', grouped.MID)}
